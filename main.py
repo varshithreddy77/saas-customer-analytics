@@ -4,6 +4,8 @@ from src.config import Settings
 from src.docker_ops import docker_compose_up
 from src.db import get_engine, wait_for_db, scalar_int
 from src.load_csv import load_csv_to_raw
+from src.table_creation import create_table, load_user_attributes
+from src.generator import generate
 
 def main() -> None:
     s = Settings()
@@ -31,5 +33,21 @@ def main() -> None:
 
     print("[bold green]✅ Step 1 complete[/bold green]")
 
+    print("STEP 2) Create Step2 tables")
+    create_table(engine)
+
+    print("STEP 2) Load user attributes")
+    n_attr = load_user_attributes(engine, s.data_path)
+    print("Loaded raw_user_attributes:", n_attr)
+
+    print("STEP 2) Generate events/invoices/tickets")
+    inserted = generate(
+        engine,
+        lookback_days=7,      # start small; increase later
+        sample_users=5000,    # set 0 for ALL users (can be heavy)
+        seed=42,
+        force_rebuild=False,  # set True if you want to wipe Step2 tables & regenerate
+    )
+    print("Inserted:", inserted)
 if __name__ == "__main__":
     main()
