@@ -1,11 +1,12 @@
 from rich import print
-
+import traceback
 from src.config import Settings
 from src.docker_ops import docker_compose_up
 from src.db import get_engine, wait_for_db, scalar_int
 from src.load_csv import load_csv_to_raw
 from src.table_creation import create_table, load_user_attributes
 from src.generator import generate
+from src.preprocessing import create_schema
 
 def main() -> None:
     s = Settings()
@@ -41,13 +42,27 @@ def main() -> None:
     print("Loaded raw_user_attributes:", n_attr)
 
     print("STEP 2) Generate events/invoices/tickets")
-    inserted = generate(
-        engine,
-        lookback_days=7,      # start small; increase later
-        sample_users=5000,    # set 0 for ALL users (can be heavy)
-        seed=42,
-        force_rebuild=False,  # set True if you want to wipe Step2 tables & regenerate
-    )
+    try:
+        inserted = generate(
+            engine,
+            lookback_days=7,      # start small; increase later
+            sample_users=5000,    # set 0 for ALL users (can be heavy)
+            seed=42,
+            force_rebuild=False,  # set True if you want to wipe Step2 tables & regenerate
+        )
+    except Exception as e:
+        print("\n========== REAL ERROR ==========")
+        print("TYPE:", type(e))
+        print("REPR:", repr(e))
+        if hasattr(e, "orig"):
+            print("DB ORIG:", repr(e.orig))
+        traceback.print_exc()
+        print("================================\n")
+        raise
+
+    print("Step 3) Build analytical schema")
+    result = create_schema(engine, rebuild=True)
+    print("STEP 3 done ✅", result)
     print("Inserted:", inserted)
 if __name__ == "__main__":
     main()

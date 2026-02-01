@@ -3,7 +3,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 def get_engine(url: str) -> Engine:
-    return create_engine(url, pool_pre_ping=True)
+    return create_engine(url, future=True, hide_parameters=True)
 
 def wait_for_db(engine: Engine, timeout_s: int = 60) -> None:
     start = time.time()

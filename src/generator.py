@@ -7,6 +7,8 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import MetaData, Table
 
 PIPELINE_NAME = "generate"
 
@@ -44,6 +46,45 @@ def month_starts_between(start_date: date, end_date: date):
     while current <= last:
         yield current
         current = (current.replace(day = 28) + timedelta(days=4)).replace(day=1)
+
+def next_month_start(d: date) -> date:
+    # First day of next month, used to avoid re-emitting current month invoices
+    return (d.replace(day=28) + timedelta(days=4)).replace(day=1)
+
+def chunked_rows(rows: list[dict], size: int):
+    for i in range(0, len(rows), size):
+        yield rows[i : i + size]
+
+def insert_ignore_conflicts(
+    engine: Engine,
+    *,
+    schema: str,
+    table_name: str,
+    rows: list[dict],
+    pk_columns: list[str],
+    chunk_size: int = 5000,
+) -> int:
+    if not rows:
+        return 0
+
+    def normalize_row(row: dict) -> dict:
+        # Convert pandas NaT/NaN to None so Postgres accepts NULLs
+        return {k: (None if pd.isna(v) else v) for k, v in row.items()}
+
+    metadata = MetaData()
+    table = Table(table_name, metadata, schema=schema, autoload_with=engine)
+    inserted = 0
+
+    with engine.begin() as conn:
+        for chunk in chunked_rows(rows, chunk_size):
+            chunk = [normalize_row(r) for r in chunk]
+            stmt = pg_insert(table).values(chunk).on_conflict_do_nothing(
+                index_elements=pk_columns
+            )
+            result = conn.execute(stmt)
+            inserted += result.rowcount or 0
+
+    return inserted
 
 def generate(
     engine: Engine,
@@ -148,6 +189,12 @@ def generate(
     # Build quick lookup for usage + nps
     u_lookup = u.set_index("user_id")[["usage_score", "nps_score"]].to_dict("index")
 
+    # If this is an incremental run and we are mid-month, skip the current month's
+    # invoice to avoid duplicate invoice_id inserts.
+    invoice_start_d = start_d
+    if last_run is not None and start_d.day != 1:
+        invoice_start_d = next_month_start(start_d)
+
     for _, s in subs.iterrows():
         sub_start = pd.to_datetime(s["start_at"]).date()
         sub_end = (
@@ -156,7 +203,7 @@ def generate(
             else end_d
         )
 
-        window_start = max(sub_start, start_d)
+        window_start = max(sub_start, invoice_start_d)  
         window_end = min(sub_end, end_d)
 
         for month_start in month_starts_between(window_start, window_end):
@@ -230,42 +277,34 @@ def generate(
     inserted = {"raw_events": 0, "raw_invoices": 0, "raw_tickets": 0}
 
     if len(events_df) > 0:
-        events_df["properties_json"] = events_df["properties_json"].apply(json.dumps)
-        events_df.to_sql(
-            "raw_events",
+        inserted["raw_events"] = insert_ignore_conflicts(
             engine,
             schema="raw",
-            if_exists="append",
-            index=False,
-            chunksize=5000,
-            method="multi",
-            dtype={"properties_json": JSONB()},
+            table_name="raw_events",
+            rows=events_df.to_dict(orient="records"),
+            pk_columns=["event_id"],
+            chunk_size=1000,
         )
-        inserted["raw_events"] = len(events_df)
 
     if len(invoices_df) > 0:
-        invoices_df.to_sql(
-            "raw_invoices",
+        inserted["raw_invoices"] = insert_ignore_conflicts(
             engine,
             schema="raw",
-            if_exists="append",
-            index=False,
-            chunksize=5000,
-            method="multi",
+            table_name="raw_invoices",
+            rows=invoices_df.to_dict(orient="records"),
+            pk_columns=["invoice_id"],
+            chunk_size=1000,
         )
-        inserted["raw_invoices"] = len(invoices_df)
 
     if len(tickets_df) > 0:
-        tickets_df.to_sql(
-            "raw_tickets",
+        inserted["raw_tickets"] = insert_ignore_conflicts(
             engine,
             schema="raw",
-            if_exists="append",
-            index=False,
-            chunksize=5000,
-            method="multi",
+            table_name="raw_tickets",
+            rows=tickets_df.to_dict(orient="records"),
+            pk_columns=["ticket_id"],
+            chunk_size=1000,
         )
-        inserted["raw_tickets"] = len(tickets_df)
 
     set_last_run(engine, now)
     return inserted
