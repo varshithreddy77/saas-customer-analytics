@@ -7,6 +7,7 @@ from src.load_csv import load_csv_to_raw
 from src.table_creation import create_table, load_user_attributes
 from src.generator import generate
 from src.preprocessing import create_schema
+from src.reporting import fetch_bi_report, export_bireport_to_csv
 
 def main() -> None:
     s = Settings()
@@ -64,5 +65,15 @@ def main() -> None:
     result = create_schema(engine, rebuild=True)
     print("STEP 3 done ✅", result)
     print("Inserted:", inserted)
+
+    print("[bold magenta]Step 4) Build MART layer (BI-ready)[/bold magenta]")
+    mart_counts = fetch_bi_report(engine, rebuild=True, days_back=90)
+    print("[green]Mart row counts:[/green]", mart_counts)
+
+    print("[bold magenta]Step 4) Export MART tables to CSV for Power BI[/bold magenta]")
+    paths = export_bireport_to_csv(engine, out_dir="outputs/powerbi")
+    print("[green]Exported files:[/green]", paths)
+
+    print("[bold green]✅ Step 4 done[/bold green]")
 if __name__ == "__main__":
     main()
